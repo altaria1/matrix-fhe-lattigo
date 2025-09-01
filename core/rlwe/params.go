@@ -68,7 +68,7 @@ type ParametersLiteral struct {
 type ParametersLiteral3N struct {
 	order2       int
 	order3       int
-	LogNthRoot   int                         `json:",omitempty"`
+	NthRoot      int                         `json:",omitempty"`
 	Q            []uint64                    `json:",omitempty"`
 	P            []uint64                    `json:",omitempty"`
 	LogQ         []int                       `json:",omitempty"`
@@ -317,7 +317,7 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 	return NewParameters(paramDef.LogN, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
 }
 
-func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters, err error) {
+func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters3N, err error) {
 
 	if paramDef.Xs == nil {
 		paramDef.Xs = DefaultXs
@@ -336,13 +336,13 @@ func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters
 
 	// Invalid moduli configurations: do not allow empty Q and LogQ as well double-set log and non-log fields.
 	if paramDef.Q == nil && paramDef.LogQ == nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are empty")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are empty")
 	}
 	if paramDef.Q != nil && paramDef.LogQ != nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are set")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are set")
 	}
 	if paramDef.P != nil && paramDef.LogP != nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both P and LogP fields are set")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both P and LogP fields are set")
 	}
 
 	var (
@@ -355,10 +355,15 @@ func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters
 	if paramDef.LogQ != nil || paramDef.LogP != nil {
 		switch paramDef.RingType {
 		case ring.Matrix:
-			LogNthRoot := utils.Max(paramDef.LogN+1, paramDef.LogNthRoot)
-			q, p, err = GenModuli(LogNthRoot, paramDef.LogQ, paramDef.LogP) //2NthRoot
+			N := 1 << uint(paramDef.order2)        // 2^order2
+			for i := 0; i < paramDef.order3; i++ { // 3^order3
+				N *= 3
+			}
+			NthRoot := 3 * N
+
+			q, p, err = GenModuli3N(NthRoot, paramDef.LogQ, paramDef.LogP) //3NthRoot
 			if err != nil {
-				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate standard ring moduli: %w", err)
+				return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate matrix ring moduli: %w", err)
 			}
 		}
 	}
@@ -369,7 +374,7 @@ func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters
 	if p == nil {
 		p = paramDef.P
 	}
-	return NewParameters(paramDef.order2, paramDef.order3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
+	return NewParameters3N(paramDef.order2, paramDef.order3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
 }
 
 // StandardParameters returns a RLWE parameter set that corresponds to the
@@ -385,6 +390,18 @@ func (p Parameters) StandardParameters() (pci Parameters, err error) {
 		pci.logN = p.logN + 1
 		pci.ringType = ring.Standard
 		err = pci.initRings()
+	default:
+		err = fmt.Errorf("invalid ring type")
+	}
+
+	return
+}
+
+func (p Parameters3N) StandardParameters3N() (pci Parameters3N, err error) {
+
+	switch p.ringType {
+	case ring.Matrix:
+		return p, nil
 	default:
 		err = fmt.Errorf("invalid ring type")
 	}
@@ -413,13 +430,47 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 	}
 }
 
+// ParametersLiteral returns the ParametersLiteral of the target Parameters.
+func (p Parameters3N) ParametersLiteral3N() ParametersLiteral3N {
+
+	Q := make([]uint64, len(p.qi))
+	copy(Q, p.qi)
+
+	P := make([]uint64, len(p.pi))
+	copy(P, p.pi)
+
+	return ParametersLiteral3N{
+		order2:       p.order2,
+		order3:       p.order3,
+		Q:            Q,
+		P:            P,
+		Xe:           p.xe.DistributionParameters,
+		Xs:           p.xs.DistributionParameters,
+		RingType:     p.ringType,
+		DefaultScale: p.defaultScale,
+		NTTFlag:      p.nttFlag,
+	}
+}
+
 // GetRLWEParameters returns a pointer to the underlying RLWE parameters.
 func (p Parameters) GetRLWEParameters() *Parameters {
 	return &p
 }
 
+// GetRLWEParameters returns a pointer to the underlying RLWE parameters.
+func (p Parameters3N) GetRLWEParameters() *Parameters3N {
+	return &p
+}
+
 // NewScale creates a new scale using the stored default scale as template.
 func (p Parameters) NewScale(scale interface{}) Scale {
+	newScale := NewScale(scale)
+	newScale.Mod = p.defaultScale.Mod
+	return newScale
+}
+
+// NewScale creates a new scale using the stored default scale as template.
+func (p Parameters3N) NewScale(scale interface{}) Scale {
 	newScale := NewScale(scale)
 	newScale.Mod = p.defaultScale.Mod
 	return newScale
@@ -445,8 +496,26 @@ func (p Parameters) LogN() int {
 	return p.logN
 }
 
+func (p Parameters3N) Order2() int {
+	return p.order2
+}
+
+func (p Parameters3N) Order3() int {
+	return p.order3
+}
+
 // NthRoot returns the NthRoot of the ring.
 func (p Parameters) NthRoot() int {
+	if p.RingQ() != nil {
+		/* #nosec G115 -- NthRoot of valid [ring.Ring] is positive */
+		return int(p.RingQ().NthRoot())
+	}
+
+	return 0
+}
+
+// NthRoot returns the NthRoot of the ring.
+func (p Parameters3N) NthRoot() int {
 	if p.RingQ() != nil {
 		/* #nosec G115 -- NthRoot of valid [ring.Ring] is positive */
 		return int(p.RingQ().NthRoot())
@@ -471,8 +540,18 @@ func (p Parameters) RingQ() *ring.Ring {
 	return p.ringQ
 }
 
+// RingQ returns a pointer to ringQ
+func (p Parameters3N) RingQ() *ring.Ring {
+	return p.ringQ
+}
+
 // RingP returns a pointer to ringP
 func (p Parameters) RingP() *ring.Ring {
+	return p.ringP
+}
+
+// RingP returns a pointer to ringP
+func (p Parameters3N) RingP() *ring.Ring {
 	return p.ringP
 }
 
@@ -481,13 +560,28 @@ func (p Parameters) RingQP() *ringqp.Ring {
 	return &ringqp.Ring{RingQ: p.ringQ, RingP: p.ringP}
 }
 
+// RingQP returns a pointer to ringQP
+func (p Parameters3N) RingQP() *ringqp.Ring {
+	return &ringqp.Ring{RingQ: p.ringQ, RingP: p.ringP}
+}
+
 // NTTFlag returns a boolean indicating if elements are stored by default in the NTT domain.
 func (p Parameters) NTTFlag() bool {
 	return p.nttFlag
 }
 
+// NTTFlag returns a boolean indicating if elements are stored by default in the NTT domain.
+func (p Parameters3N) NTTFlag() bool {
+	return p.nttFlag
+}
+
 // Xs returns the Distribution of the secret
 func (p Parameters) Xs() ring.DistributionParameters {
+	return p.xs.DistributionParameters
+}
+
+// Xs returns the Distribution of the secret
+func (p Parameters3N) Xs() ring.DistributionParameters {
 	return p.xs.DistributionParameters
 }
 
@@ -1010,6 +1104,60 @@ func GenModuli(LogNthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 
 		/* #nosec G115 -- bitsize cannot be negative */
 		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(1<<LogNthRoot))
+
+		if bitsize == 61 {
+			if primes[bitsize], err = g.NextDownstreamPrimes(value); err != nil {
+				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=61 for LogNthRoot=%d: %w", value, LogNthRoot, err)
+			}
+		} else {
+			if primes[bitsize], err = g.NextAlternatingPrimes(value); err != nil {
+				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=%d for LogNthRoot=%d: %w", value, bitsize, LogNthRoot, err)
+			}
+		}
+	}
+
+	// Assigns the primes to the moduli chain
+	for _, qi := range logQ {
+		q = append(q, primes[qi][0])
+		primes[qi] = primes[qi][1:]
+	}
+
+	// Assigns the primes to the special primes list for the extended ring
+	for _, pj := range logP {
+		p = append(p, primes[pj][0])
+		primes[pj] = primes[pj][1:]
+	}
+
+	return
+}
+
+// GenModuli generates a valid moduli chain from the provided moduli sizes.
+func GenModuli3N(NthRoot int, logQ, logP []int) (q, p []uint64, err error) {
+
+	if err = checkSizeParams(logN); err != nil {
+		return
+	}
+
+	if err = checkModuliLogSize(logQ, logP); err != nil {
+		return
+	}
+
+	// Extracts all the different primes bit size and maps their number
+	primesbitlen := make(map[int]int)
+	for _, qi := range logQ {
+		primesbitlen[qi]++
+	}
+
+	for _, pj := range logP {
+		primesbitlen[pj]++
+	}
+
+	// For each bit-size, finds that many primes
+	primes := make(map[int][]uint64)
+	for bitsize, value := range primesbitlen {
+
+		/* #nosec G115 -- bitsize cannot be negative */
+		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(NthRoot))
 
 		if bitsize == 61 {
 			if primes[bitsize], err = g.NextDownstreamPrimes(value); err != nil {

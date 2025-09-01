@@ -221,7 +221,7 @@ func TestNTT3N_ZeroAndOne(t *testing.T) {
 	}
 }
 
-// Benchmark: NTT-based polynomial multiplication time for various N
+// Benchmark: NTT-based polynomial multiplication time for various N, main
 func BenchmarkNTT3N_Mul(b *testing.B) {
 	// Smaller sizes for working benchmark version - avoid extremely slow large sizes
 	sizes := []int{6, 12, 24, 48, 96, 192}
